@@ -1,3 +1,5 @@
+import type { MiddlewareHandler } from "hono";
+import type { AppVariables } from "../../auth/guards";
 import { reasonWithoutStatement } from "../../db/query-failure";
 import { catalogueEntry } from "../catalogue";
 import {
@@ -13,17 +15,36 @@ export function mountOAuthCallbackRoute({
   routes,
   store,
   connect,
+  requireUser,
 }: PluginRouteContext) {
+  /**
+   * Who the browser arriving here is signed in as, or undefined when it is nobody.
+   *
+   * The guard is asked by hand rather than mounted, because its refusal is a JSON 401/403 and every
+   * way out of this route has to be a redirect. A refusal simply leaves the id unset.
+   */
+  const signedInAs = async (
+    context: Parameters<MiddlewareHandler<{ Variables: AppVariables }>>[0],
+  ): Promise<string | undefined> => {
+    let id: string | undefined;
+    await requireUser(context, async () => {
+      id = context.var.actor?.id;
+    });
+    return id;
+  };
+
   /**
    * Where the vendor sends somebody back.
    *
-   * Deliberately not behind `requireUser`. The person arrives on a redirect from another company's
-   * server, and whose connection this is comes from the sealed state rather than from whatever
-   * session the browser happens to be carrying — which is what stops a callback delivered to the
-   * wrong browser from attaching one person's Google account to another person's row.
+   * The sealed state names whose connection this is, AND the browser completing the consent must be
+   * signed in as that same person. The state alone is not enough: the connect route hands the
+   * authorization URL (state included) to the person who asked for it, so without this check that
+   * person could pass the link to somebody else, and the other person's consent would attach their
+   * account at the vendor to the first person's row. The GitHub identity callback binds its state
+   * to the session for the same reason (identity/github-callback.ts).
    *
-   * Having no session is what makes the access check below necessary. Every other route asks the
-   * question by being behind a guard; this one has to ask it out loud.
+   * Not mounted behind `requireUser`, because its refusal is a JSON body and this route must always
+   * answer with a redirect; the session is asked for by hand below instead.
    *
    * Every failure ends the same way: back at Settings with a word about what happened, and nothing
    * written. There is no useful distinction here for the person between a forged state and an expired
@@ -84,6 +105,14 @@ export function mountOAuthCallbackRoute({
        * fact this endpoint owes an unauthenticated caller.
        */
       if (!(await connect.personHasAccess(state.userId))) {
+        return context.redirect(failed);
+      }
+
+      /*
+       * The consent belongs to the person who started it. Checked before the code is redeemed, so a
+       * link completed by anybody else writes nothing and leaves the code unspent.
+       */
+      if ((await signedInAs(context)) !== state.userId) {
         return context.redirect(failed);
       }
 

@@ -12,11 +12,10 @@ import { createPluginRoutes } from "../src/plugins/routes";
 /**
  * `GET /oauth/callback`: the request the vendor sends somebody back on.
  *
- * It has no session by design — whose connection this is comes from the state, not from whatever
- * cookie the browser happens to be carrying. That is what makes the state the only thing standing
- * between a consent screen and a live refresh token in this deployment's vault, and it is why what
- * the state says has to be checked against the deployment as it is when the callback LANDS rather
- * than as it was when the flow started ten minutes earlier.
+ * Whose connection this is comes from the sealed state, and the browser completing the consent has
+ * to be signed in as that same person: a link started by one person and completed by another must
+ * write nothing. What the state says is also checked against the deployment as it is when the
+ * callback LANDS rather than as it was when the flow started ten minutes earlier.
  *
  * So these tests are mostly about what must not be written: a grant for a state this deployment did
  * not seal, for a state old enough to have expired, or for somebody who no longer has access.
@@ -28,10 +27,12 @@ const CALLBACK = "http://t/api/plugins/oauth/callback";
 
 const FAILED = "https://app.example/connections?connected=failed";
 
-function signedIn(): MiddlewareHandler<{ Variables: AppVariables }> {
+function signedIn(
+  id = "user-1",
+): MiddlewareHandler<{ Variables: AppVariables }> {
   return async (context, next) => {
     context.set("actor", {
-      id: "user-1",
+      id,
       email: "person@openbot.test",
       role: "user",
     } as never);
@@ -60,6 +61,8 @@ function app(input: {
    * that nothing above it was ever going to catch.
    */
   oauthClientFor?: () => Promise<{ clientId: string; clientSecret: string }>;
+  /** The session guard the callback asks. Signed in as user-1 by default. */
+  requireUser?: MiddlewareHandler<{ Variables: AppVariables }>;
 }) {
   const store = {
     brokerProvider: "composio" as const,
@@ -78,7 +81,7 @@ function app(input: {
   };
   const routes = createPluginRoutes(
     store as never,
-    signedIn(),
+    input.requireUser ?? signedIn(),
     async () => true,
     {
       publicUrl: "https://openbot.example",
@@ -553,5 +556,52 @@ describe("a callback whose own checks failed", () => {
     }
 
     expect(recorded).toEqual([]);
+  });
+});
+
+describe("a consent completed by somebody other than the person who started it", () => {
+  /*
+   * The connect route hands its authorization URL, state included, to whoever asked for it. Passed
+   * to somebody else and completed there, the second person's account at the vendor must not land
+   * on the first person's row.
+   */
+  test("a different signed-in person writes nothing, and the code is not redeemed", async () => {
+    const recorded: Recorded[] = [];
+    const hono = app({ recorded, requireUser: signedIn("user-2") });
+    const state = await sealConnectState(
+      { userId: "user-1", serverId: "notion", verifier: "v-1" },
+      KEY,
+    );
+
+    const requests = await withWillingVendor(async (requests) => {
+      const response = await hono.request(callbackUrl(state));
+      expect(response.headers.get("location")).toBe(FAILED);
+      return requests;
+    });
+
+    expect(recorded).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  test("a browser signed in as nobody is the same refusal", async () => {
+    const recorded: Recorded[] = [];
+    const hono = app({
+      recorded,
+      requireUser: async (context) =>
+        context.json({ error: "Authentication required." }, 401),
+    });
+    const state = await sealConnectState(
+      { userId: "user-1", serverId: "notion", verifier: "v-1" },
+      KEY,
+    );
+
+    const requests = await withWillingVendor(async (requests) => {
+      const response = await hono.request(callbackUrl(state));
+      expect(response.headers.get("location")).toBe(FAILED);
+      return requests;
+    });
+
+    expect(recorded).toEqual([]);
+    expect(requests).toEqual([]);
   });
 });
