@@ -54,7 +54,7 @@ export const CAPABILITY_LABELS: Record<
   cloudNetwork: {
     title: "Cloud network access",
     description:
-      "Bot computers may reach the internet, within the network policy.",
+      "Bot computers may reach the internet, within the network policy. The browser always goes through the policy; a command that ignores the proxy is held to it only by a network policy around the computer (Helm networkPolicy.enabled).",
   },
   cloudComputer: {
     title: "Cloud computer use",

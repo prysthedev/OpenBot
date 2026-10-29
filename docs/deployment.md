@@ -235,6 +235,26 @@ are capped at 350 per instance on the basic tier.
 **Railway, Render, Fly.io.** All run this image directly and all provision PostgreSQL in a click,
 which makes them the shortest path from nothing to a running deployment.
 
+## Network policy and Bot shell commands
+
+A Bot's network policy, including the `deny_all` a Bot gets when its owner's Cloud network access is
+switched off, is applied by a filter proxy inside each computer. The browser is always sent through
+it. A shell command is sent through it with the proxy variables, which a command can unset or ignore:
+`curl --noproxy '*'`, or any program opening a socket of its own, reaches whatever the computer's
+network can reach. So on its own the policy holds the browser, and holds commands only while they
+cooperate.
+
+What holds a command that does not cooperate is a rule outside the computer:
+
+- **Kubernetes**: set `networkPolicy.enabled: true` in the Helm chart, on a cluster whose CNI enforces
+  NetworkPolicy, so a computer pod can reach only the destinations the chart allows.
+- **Docker / the supervisor**: put the computers on a network of their own (`COMPUTER_NETWORK`) with
+  egress limited by the host's firewall, and with inter-container traffic off, so one person's
+  computer cannot reach another's.
+
+Until one of those is in place, treat Cloud network access off as switching off the browser's network,
+not the computer's.
+
 ## Known costs
 
 **The browser images carry only the Chromium browser family.** The all-in-one Dockerfile and the
