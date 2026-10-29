@@ -1392,6 +1392,46 @@ function serverPort(environment: Environment): number {
   return port ?? serverPort ?? DEFAULT_PORT;
 }
 
+/**
+ * The fixed secrets `docker-compose.yml` and `scripts/start.sh` fall back to when nothing is set.
+ *
+ * Fine on a laptop, where nobody else signs in. They are printed in a public repository, though, so
+ * on a deployment other people sign in to they are no secret at all: any process that can reach the
+ * supervisor, a computer or the worker endpoint can present them.
+ */
+export const DEVELOPMENT_SECRETS: Readonly<Record<string, string>> = {
+  COMPUTER_TOKEN: "openbot-dev-computer-token",
+  SUPERVISOR_TOKEN: "openbot-dev-supervisor-token",
+  WORKER_SHARED_SECRET: "openbot-dev-worker-secret",
+};
+
+/**
+ * Refuse to start a deployment people sign in to while it still holds a published default secret.
+ *
+ * `OPENBOT_ALLOW_DEVELOPMENT_SECRETS=true` lets a laptop that has configured a real identity
+ * provider for testing keep the defaults; it warns every time it is used.
+ */
+export function refuseDevelopmentSecrets(
+  environment: Environment,
+  signsPeopleIn: boolean,
+): void {
+  if (!signsPeopleIn) return;
+  const found = Object.entries(DEVELOPMENT_SECRETS)
+    .filter(([name, value]) => optional(environment, name) === value)
+    .map(([name]) => name);
+  if (found.length === 0) return;
+  const names = found.join(", ");
+  if (optional(environment, "OPENBOT_ALLOW_DEVELOPMENT_SECRETS") === "true") {
+    console.warn(
+      `${names} still hold the published development default. OPENBOT_ALLOW_DEVELOPMENT_SECRETS=true lets this start; replace them before anybody else can reach this deployment.`,
+    );
+    return;
+  }
+  throw new Error(
+    `${names} still hold the published development default, and this deployment signs people in. Set each to a fresh secret (openssl rand -base64 32), or set OPENBOT_ALLOW_DEVELOPMENT_SECRETS=true on a machine nobody else can reach.`,
+  );
+}
+
 export function loadConfig(
   environment: Environment = process.env,
 ): DeploymentConfig {
@@ -1404,6 +1444,10 @@ export function loadConfig(
   const organizationAuthUrl = organizationAuthValue
     ? organizationAuthority(organizationAuthValue)
     : undefined;
+  refuseDevelopmentSecrets(
+    environment,
+    Boolean(organizationAuthUrl) || configuredAuthProviders(auth).length > 0,
+  );
   const managedAgent = managedAgentConfig(environment);
   const githubApp = githubAppConfig(environment);
   const publicUrl = (
